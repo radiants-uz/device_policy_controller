@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+android.app.role.RoleManager
 import android.util.Base64
 import android.util.Log
 import android.view.ViewGroup
@@ -784,7 +785,7 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     // Ветвь владельца: используем persistent preferred через DPM
     if (isOwner && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
         try {
-            val launcherComponent = ComponentName(act, YourLauncherActivity::class.java)
+            val launcherComponent = ComponentName(act, activity::class.java)
             if (enable) {
                 val filter = IntentFilter(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_HOME)
