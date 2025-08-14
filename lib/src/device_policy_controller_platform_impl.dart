@@ -170,4 +170,17 @@ class DevicePolicyControllerPlatformImpl
   Future<void> remove(String contentKey) {
     return _methodChannel.invokeMethod('remove', {'contentKey': contentKey});
   }
+
+  @override
+  Future<bool> addAllowedLockTaskPackages(List<String> packages) async {
+    return await _methodChannel.invokeMethod(
+      'addAllowedLockTaskPackages',
+      {"packages": packages},
+    );
+  }
+
+  @override
+  Future<List<String>> getLockTaskPackages() async {
+    return await _methodChannel.invokeMethod('getLockTaskPackages');
+  }
 }

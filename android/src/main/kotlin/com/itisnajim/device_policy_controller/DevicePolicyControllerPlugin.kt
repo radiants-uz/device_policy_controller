@@ -110,6 +110,13 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
 
     override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
+            "addAllowedLockTaskPackages" -> {
+                val packages = call.argument<List<String>>("packages")
+                addAllowedLockTaskPackages(packages, result)
+            }
+            "getLockTaskPackages" -> {
+                getLockTaskPackages(result)
+            }
             "setApplicationRestrictions" -> {
                 val packageName = call.argument<String>("packageName")
                 val restrictions = call.argument<Map<String, String>>("restrictions")
@@ -445,6 +452,20 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         }
     }
 
+    private fun getLockTaskPackages(result: Result) {
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pkgs = mDevicePolicyManager.getLockTaskPackages(adminComponentName)
+            result.success(pkgs?.toList() ?: emptyList<String>())
+        } else {
+            // On Lollipop (API 21/22) getLockTaskPackages is unavailable
+            result.error("UNSUPPORTED", "Requires Android 6.0 (API 23) or higher", null)
+        }
+        } catch (e: SecurityException) {
+            result.error("GET_LOCK_TASK_PACKAGES_FAILED", e.localizedMessage, null)
+        }
+    }
+
     private fun installApplication(apkUrl: String?, result: Result) {
         if (!apkUrl.isNullOrEmpty()) {
             try {
@@ -695,46 +716,166 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     }
 
 
+    // private fun setAsLauncher(enable: Boolean, result: Result) {
+    //     val isAdminActive = this.isAdminActive()
+    //     val isAppLauncherDefault = this.isAppLauncherDefault()
+
+    //     if (enable && isAppLauncherDefault || !enable && !isAppLauncherDefault) {
+    //         result.success(true)
+    //         return
+    //     }
+
+    //     if (isAdminActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+    //         if (!isAppLauncherDefault) {
+    //             val activity = this.activity ?: run { result.success(false); return }
+    //             val activityComponent = ComponentName(context, activity::class.java)
+    //             val filter = IntentFilter(Intent.ACTION_MAIN).apply {
+    //                 addCategory(Intent.CATEGORY_HOME)
+    //                 addCategory(Intent.CATEGORY_DEFAULT)
+    //             }
+    //             mDevicePolicyManager.addPersistentPreferredActivity(
+    //                 adminComponentName, filter, activityComponent
+    //             )
+    //         } else {
+    //             mDevicePolicyManager.clearPackagePersistentPreferredActivities(
+    //                 adminComponentName, context.packageName
+    //             )
+    //         }
+    //         result.success(true); return
+    //     } else if (!isAdminActive) {
+    //         if (!isAppLauncherDefault) {
+    //             resetPreferredLauncherAndOpenChooser(context)
+    //         } else {
+    //             context.packageManager.clearPackagePreferredActivities(context.packageName)
+    //             val intent = Intent(Intent.ACTION_MAIN).apply {
+    //                 addCategory(Intent.CATEGORY_HOME)
+    //             }
+    //             context.startActivity(intent)
+    //         }
+    //         result.success(true); return
+    //     }
+    //     result.success(false); return
+    // }
+
     private fun setAsLauncher(enable: Boolean, result: Result) {
-        val isAdminActive = this.isAdminActive()
-        val isAppLauncherDefault = this.isAppLauncherDefault()
+    val isAppLauncherDefault = this.isAppLauncherDefault() // текущая проверка
+    // Быстрый выход, если уже в желаемом состоянии
+    if ((enable && isAppLauncherDefault) || (!enable && !isAppLauncherDefault)) {
+        result.success(true); return
+    }
 
-        if (enable && isAppLauncherDefault || !enable && !isAppLauncherDefault) {
-            result.success(true)
-            return
-        }
+    // Нужна foreground-активность хотя бы для не-админ ветки/chooser
+    val act = this.activity
+    if (act == null) {
+        // Для админ-ветки можно работать и без activity, но ваш reset* требует её.
+        // Сигнализируем вызывающей стороне.
+        result.error("NO_ACTIVITY", "Foreground activity is required to change launcher state", null)
+        return
+    }
 
-        if (isAdminActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            if (!isAppLauncherDefault) {
-                val activity = this.activity ?: run { result.success(false); return }
-                val activityComponent = ComponentName(context, activity::class.java)
+    // Проверка владельца (строже, чем просто isAdminActive)
+    val isOwner = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+            mDevicePolicyManager.isDeviceOwnerApp(act.packageName)
+                    || mDevicePolicyManager.isProfileOwnerApp(act.packageName)
+        } else false
+    } catch (_: Exception) { false }
+
+    // Ветвь владельца: используем persistent preferred через DPM
+    if (isOwner && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        try {
+            val launcherComponent = ComponentName(act, YourLauncherActivity::class.java)
+            if (enable) {
                 val filter = IntentFilter(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_HOME)
                     addCategory(Intent.CATEGORY_DEFAULT)
                 }
                 mDevicePolicyManager.addPersistentPreferredActivity(
-                    adminComponentName, filter, activityComponent
+                    adminComponentName, filter, launcherComponent
                 )
             } else {
                 mDevicePolicyManager.clearPackagePersistentPreferredActivities(
-                    adminComponentName, context.packageName
+                    adminComponentName, act.packageName
                 )
             }
             result.success(true); return
-        } else if (!isAdminActive) {
-            if (!isAppLauncherDefault) {
-                resetPreferredLauncherAndOpenChooser(context)
-            } else {
-                context.packageManager.clearPackagePreferredActivities(context.packageName)
-                val intent = Intent(Intent.ACTION_MAIN).apply {
-                    addCategory(Intent.CATEGORY_HOME)
+        } catch (e: SecurityException) {
+            result.error("DPM_SECURITY", e.localizedMessage, null); return
+        } catch (e: Exception) {
+            result.error("DPM_ERROR", e.localizedMessage, null); return
+        }
+    }
+
+    // Ветка не-владельца: RoleManager на Android 10+; иначе — fallback
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        try {
+            val roleManager = act.getSystemService(RoleManager::class.java)
+            val roleHome = RoleManager.ROLE_HOME
+            if (enable) {
+                if (roleManager.isRoleAvailable(roleHome) && !roleManager.isRoleHeld(roleHome)) {
+                    val intent = roleManager.createRequestRoleIntent(roleHome)
+                    act.startActivity(intent) // пользователь подтвердит выбор лаунчера
                 }
-                context.startActivity(intent)
+            } else {
+                // Лишить роль программно нельзя — пользователь должен сменить лаунчер.
+                // Откроем системный выбор HOME.
+                val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                act.startActivity(intent)
             }
             result.success(true); return
+        } catch (e: Exception) {
+            // Падать не будем — уйдём во fallback
         }
-        result.success(false); return
     }
+
+    // Fallback для старых версий и в случае ошибки RoleManager
+    try {
+        if (enable) {
+            // Откроем системный выбор домашнего приложения
+            resetPreferredLauncherAndOpenChooser(act)
+        } else {
+            act.packageManager.clearPackagePreferredActivities(act.packageName)
+            val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            act.startActivity(i)
+        }
+        result.success(true)
+    } catch (e: Exception) {
+        result.error("FALLBACK_ERROR", e.localizedMessage, null)
+    }
+}
+
+
+    private fun addAllowedLockTaskPackages(packages: List<String>?, result: Result) {
+        if (packages.isNullOrEmpty()) {
+            result.error("INVALID_ARGUMENTS", "'packages' argument is null or empty", null)
+            return
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                // Получаем текущий список (если надо объединить)
+                val current = mDevicePolicyManager.getLockTaskPackages(adminComponentName).toMutableList()
+
+                // Добавляем новые, избегая дубликатов
+                for (pkg in packages) {
+                    if (!current.contains(pkg)) {
+                        current.add(pkg)
+                    }
+                }
+
+                mDevicePolicyManager.setLockTaskPackages(
+                    adminComponentName,
+                    current.toTypedArray()
+                )
+                result.success(true)
+            } else {
+                result.error("UNSUPPORTED", "Requires Android 5.0 or higher", null)
+            }
+        } catch (e: SecurityException) {
+            result.error("ADD_ALLOWED_LOCK_TASK_PACKAGES_FAILED", e.localizedMessage, null)
+        }
+    }
+
 
     private fun lockApp(home: Boolean, result: Result?) {
         if (activity == null) {
